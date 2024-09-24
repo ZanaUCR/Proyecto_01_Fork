@@ -29,74 +29,97 @@ import java.time.Instant;
 @Component
 @Slf4j
 
-public class PersonaAspect  {
+public class PersonaAspect {
 
     private static final Logger logger = LoggerFactory.getLogger(PersonaAspect.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private static final String LOG_FILE_PATH = "src/main/java/cr/una/ac/proyecto_01/logs/log.json";
     private final File logFile = new File(LOG_FILE_PATH);
     private boolean firstEntry = true;
-    @Around("(@annotation(org.springframework.web.bind.annotation.GetMapping) || @annotation(org.springframework.web.bind.annotation.PostMapping) || " +
-            "@annotation(org.springframework.web.bind.annotation.PatchMapping) || @annotation(org.springframework.web.bind.annotation.DeleteMapping)) "
-            )
-    public Object logExecutionTime(ProceedingJoinPoint joinPoint) throws Throwable {
-        String methodName = joinPoint.getSignature().getName();
 
-        log.info("Starting execution method {}", methodName);
 
-        Object result = joinPoint.proceed();
 
-        log.info("Finished execution method {}", methodName);
-
-        return result;
-    }
+    // Interceptar métodos de los controladores específicos
     @Around("execution(* cr.una.ac.proyecto_01.controller.PersonaController.*(..))")
-    public Object logRequestDetails(ProceedingJoinPoint joinPoint) throws Throwable {
-        HttpServletRequest request = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes()).getRequest();
-        String endpoint = request.getRequestURI();
-        String method = request.getMethod();
-        String threadName = Thread.currentThread().getName();
-        Instant start = Instant.now();
+    public Object logExecutionTime(ProceedingJoinPoint joinPoint) throws Throwable {
+        // Obtener la solicitud y la respuesta actuales
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        HttpServletRequest request = attributes.getRequest();
+        HttpServletResponse response = attributes.getResponse();
 
-        log.info("Request received at endpoint: {}, method: {}", endpoint, method);
+        long startTime = System.currentTimeMillis();
+        String errorMessage = null;
+
+        // Registrar el inicio de la ejecución del método
+        log.info("Starting execution method {}", joinPoint.getSignature().getName());
 
         Object result;
+
         try {
+            // Continuar con la ejecución del método
             result = joinPoint.proceed();
         } catch (Exception e) {
-            log.error("Exception in endpoint {}: {}", endpoint, e.getMessage());
+            response.setStatus(500); // En caso de excepción, establecer el estado HTTP como 500
             throw e;
         } finally {
-            long duration = Instant.now().toEpochMilli() - start.toEpochMilli();
-            int status = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes()).getResponse().getStatus();
-            logRequestToFile(endpoint, method, duration, threadName, status);
+            long responseTimeMs = System.currentTimeMillis() - startTime;
+            String endpoint = request.getRequestURI();
+            String method = request.getMethod();
+            String threadName = Thread.currentThread().getName();
+            int status = response.getStatus();
+
+            if (status >= 400) {
+                errorMessage = getErrorMessageForStatus(status);
+            }
+
+            // Crear una entrada de log
+            LogEntry logEntry = new LogEntry(
+                    endpoint,
+                    method,
+                    status >= 400 ? "ERROR" : "INFO",
+                    responseTimeMs,
+                    threadName,
+                    status >= 400 ? "Error occurred" : "Request processed",
+                    Instant.now().toString(),
+                    status,
+                    errorMessage
+            );
+
+            // Guardar la entrada de log en el archivo JSON
+            writeLogToFile(logEntry);
+
+            log.info("Finished execution method {}", joinPoint.getSignature().getName());
         }
+
         return result;
     }
-    private void logRequestToFile(String endpoint, String method, long duration, String threadName, int status) {
-        LogEntry logEntry = new LogEntry(endpoint, method, "INFO", duration, threadName, "Request processed", Instant.now().toString(), status, null);
-        writeLogToFile(logEntry);
+
+    private String getErrorMessageForStatus(int status) {
+        return switch (status) {
+            case 400 -> "Bad Request";
+            case 401 -> "Unauthorized";
+            case 403 -> "Forbidden";
+            case 404 -> "Not Found";
+            case 500 -> "Internal Server Error";
+            default -> "HTTP Error " + status;
+        };
     }
 
     private void writeLogToFile(LogEntry logEntry) {
         try (RandomAccessFile log = new RandomAccessFile(logFile, "rw")) {
             long length = logFile.length();
 
-            // Si el archivo tiene contenido, moverse antes del último corchete ]
             if (!firstEntry) {
-                log.seek(length - 2);  // Antes de `]`
-                log.write(",\n".getBytes());  // Añadir coma antes de la nueva entrada
+                log.seek(length - 2);
+                log.write(",\n".getBytes());
             } else {
-                log.seek(length - 1);  // Si es la primera entrada, antes del `]`
+                log.seek(length - 1);
             }
 
-            // Escribir el nuevo log en formato JSON
             log.write(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(logEntry));
-
-            // Añadir el corchete de cierre `]`
             log.write("\n]".getBytes());
 
-            firstEntry = false;  // A partir de ahora, ya no es la primera entrada
+            firstEntry = false;
         } catch (IOException e) {
             e.printStackTrace();
         }
