@@ -25,6 +25,7 @@ public class LogController {
     // Endpoint para obtener todos los logs
     @GetMapping("/all")
     public ResponseEntity<List<LogEntry>> getAllLogs() {
+
         Optional<List<LogEntry>> optionalLogs = logService.readLogs();
 
         // Devuelve los logs si están presentes
